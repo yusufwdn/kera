@@ -46,7 +46,7 @@ Contoh use case:
 | Milestone | Isi | Status |
 | --- | --- | --- |
 | 0 | Setup project, toolchain, dokumentasi awal | Selesai |
-| 1 | Bot Telegram dasar: `/start`, terima pesan, allowlist | Direncanakan |
+| 1 | Bot Telegram dasar: `/start`, terima pesan, allowlist | Selesai |
 | 2 | Hubungkan Telegram ke Ollama (`qwen3:4b`) | Direncanakan |
 | 3 | Konteks percakapan terbatas, terisolasi per chat | Direncanakan |
 | 4 | Persistensi dengan SQLite | Direncanakan |

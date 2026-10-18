@@ -80,6 +80,9 @@ API model di cloud tetap bisa dengan long polling.
 - Seluruh aplikasi dijalankan dengan satu perintah (`npm run dev`).
 - Pembuatan bot (`createBot`) dipisah dari cara menjalankannya (`index.ts`), supaya
   webhook bisa ditambahkan nanti tanpa mengubah handler.
+- Error handling memakai `bot.errorBoundary()`, bukan hanya `bot.catch()`, karena
+  `bot.catch()` hanya berlaku di loop long polling. Dengan boundary, penanganan error
+  tetap bekerja kalau nanti dijalankan lewat webhook (ditemukan saat Milestone 1).
 - Kera hanya tersedia selama laptop menyala.
 - Hanya satu instance Kera yang boleh berjalan dalam satu waktu.
 
