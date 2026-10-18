@@ -6,7 +6,20 @@ import { z } from "zod";
 export type Config = {
   telegramBotToken: string;
   allowedUserIds: ReadonlySet<number>;
+  ollama: OllamaConfig;
 };
+
+// Bagian konfigurasi untuk koneksi ke Ollama. Dipakai createOllamaClient() di src/ai/.
+export type OllamaConfig = {
+  baseUrl: string;
+  model: string;
+  think: boolean;
+  timeoutMs: number;
+};
+
+export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
+export const DEFAULT_OLLAMA_MODEL = "qwen3:4b-instruct";
+export const DEFAULT_OLLAMA_TIMEOUT_MS = 120_000;
 
 // Error khusus untuk konfigurasi tidak valid.
 // Dilempar oleh loadConfig() dan ditangkap di index.ts untuk menampilkan pesan lalu exit.
@@ -16,7 +29,9 @@ export class ConfigError extends Error {
   readonly problems: readonly string[];
 
   constructor(problems: readonly string[]) {
-    super(`Invalid configuration:\n${problems.map((p) => `  - ${p}`).join("\n")}`);
+    super(
+      `Invalid configuration:\n${problems.map((p) => `  - ${p}`).join("\n")}`,
+    );
     this.name = "ConfigError";
     this.problems = problems;
   }
@@ -43,7 +58,10 @@ function parseUserIds(raw: string, ctx: z.RefinementCtx): Set<number> {
     // Regex memastikan tidak ada bentuk aneh seperti "1e5" atau "0x10" yang lolos Number().
     const id = Number(part);
     if (!/^\d+$/.test(part) || !Number.isSafeInteger(id) || id <= 0) {
-      ctx.addIssue({ code: "custom", message: `"${part}" is not a valid Telegram user ID` });
+      ctx.addIssue({
+        code: "custom",
+        message: `"${part}" is not a valid Telegram user ID`,
+      });
       continue;
     }
     ids.add(id);
@@ -59,9 +77,52 @@ const envSchema = z.object({
     .string({ error: "is required" })
     .trim()
     .min(1, "is required")
-    .regex(TELEGRAM_TOKEN_PATTERN, "does not look like a token from @BotFather"),
+    .regex(
+      TELEGRAM_TOKEN_PATTERN,
+      "does not look like a token from @BotFather",
+    ),
   ALLOWED_USER_IDS: z.string().default("").transform(parseUserIds),
+
+  // Hanya http/https. Trailing slash dibuang supaya `${baseUrl}/api/chat` tidak jadi "//api".
+  OLLAMA_BASE_URL: z
+    .url({
+      protocol: /^https?$/,
+      error: "must be an http(s) URL, e.g. http://127.0.0.1:11434",
+    })
+    .transform((url) => url.replace(/\/+$/, ""))
+    .default(DEFAULT_OLLAMA_BASE_URL),
+  OLLAMA_MODEL: z.string().trim().min(1).default(DEFAULT_OLLAMA_MODEL),
+  // Sengaja tidak memakai z.coerce.boolean(): coerce memakai Boolean(value), sehingga
+  // string "false" (tidak kosong) malah menjadi true.
+  OLLAMA_THINK: z
+    .enum(["true", "false"], { error: 'must be "true" or "false"' })
+    .transform((value) => value === "true")
+    .default(false),
+  OLLAMA_TIMEOUT_MS: z
+    .string()
+    .regex(/^\d+$/, "must be a whole number of milliseconds")
+    .transform(Number)
+    .pipe(
+      z
+        .number()
+        .min(1_000, "must be at least 1000")
+        .max(600_000, "must be at most 600000"),
+    )
+    .default(DEFAULT_OLLAMA_TIMEOUT_MS),
 });
+
+// Anggap variabel yang isinya kosong ("") sama dengan tidak diisi.
+// Dipanggil oleh loadConfig() sebelum validasi. Tanpa ini, baris `OLLAMA_MODEL=`
+// di .env menghasilkan string kosong, default zod tidak dipakai, dan validasi gagal.
+function dropEmptyValues(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const cleaned: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(env)) {
+    if (value !== undefined && value !== "") {
+      cleaned[key] = value;
+    }
+  }
+  return cleaned;
+}
 
 // Baca dan validasi konfigurasi dari environment.
 // Dipanggil sekali dari index.ts saat startup.
@@ -69,7 +130,7 @@ const envSchema = z.object({
 // jadi test tidak perlu mengubah process.env global.
 // Output: Config yang sudah bertipe. Melempar ConfigError kalau ada yang tidak valid.
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
-  const result = envSchema.safeParse(env);
+  const result = envSchema.safeParse(dropEmptyValues(env));
 
   if (!result.success) {
     const problems = result.error.issues.map((issue) => {
@@ -82,5 +143,11 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
   return {
     telegramBotToken: result.data.TELEGRAM_BOT_TOKEN,
     allowedUserIds: result.data.ALLOWED_USER_IDS,
+    ollama: {
+      baseUrl: result.data.OLLAMA_BASE_URL,
+      model: result.data.OLLAMA_MODEL,
+      think: result.data.OLLAMA_THINK,
+      timeoutMs: result.data.OLLAMA_TIMEOUT_MS,
+    },
   };
 }

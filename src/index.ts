@@ -1,10 +1,13 @@
-import { createBot, describeError } from "./bot/createBot.ts";
+import { createAssistant, MAX_REPLY_TOKENS } from "./ai/assistant.ts";
+import { createOllamaClient, type OllamaClient } from "./ai/ollamaClient.ts";
+import { createBot } from "./bot/createBot.ts";
 import { ConfigError, loadConfig, type Config } from "./config/env.ts";
+import { describeError } from "./errors.ts";
 
 // Entry point aplikasi Kera. Dijalankan oleh `npm run dev` / `npm start`.
 // Tanggung jawab file ini hanya "merakit dan menjalankan":
-// baca config -> buat bot -> jalankan long polling -> berhenti dengan rapi.
-// Logika bot ada di src/bot/, validasi config di src/config/.
+// baca config -> buat ollamaClient -> assistant -> bot -> jalankan long polling -> berhenti rapi.
+// Logika bot ada di src/bot/, integrasi model di src/ai/, validasi config di src/config/.
 
 // Baca config; kalau tidak valid, cetak daftar masalah lalu keluar dengan kode 1.
 // Dipisah dari main() supaya pesan error config (masalah setup) tampil rapi dan
@@ -15,10 +18,31 @@ function loadConfigOrExit(): Config {
   } catch (error) {
     if (error instanceof ConfigError) {
       console.error(error.message);
-      console.error("Check your .env file. See .env.example for the expected variables.");
+      console.error(
+        "Check your .env file. See .env.example for the expected variables.",
+      );
       process.exit(1);
     }
     throw error;
+  }
+}
+
+// Cek apakah Ollama bisa dihubungi dan model sudah ada. Hanya memberi warning:
+// bot tetap dijalankan, karena Ollama bisa saja dinyalakan setelah Kera, dan /ping
+// tetap berguna walaupun Ollama mati.
+async function warnIfModelUnavailable(
+  client: OllamaClient,
+  config: Config,
+): Promise<void> {
+  try {
+    await client.checkModelAvailable();
+    console.info(
+      `Ollama is ready with model ${config.ollama.model} at ${config.ollama.baseUrl}`,
+    );
+  } catch (error) {
+    console.warn(
+      `Ollama check failed, replies will fail until it is fixed. ${describeError(error)}`,
+    );
   }
 }
 
@@ -46,7 +70,18 @@ async function main(): Promise<void> {
     );
   }
 
-  const bot = createBot(config, console);
+  const ollamaClient = createOllamaClient({
+    ...config.ollama,
+    maxOutputTokens: MAX_REPLY_TOKENS,
+  });
+  await warnIfModelUnavailable(ollamaClient, config);
+
+  const bot = createBot({
+    token: config.telegramBotToken,
+    allowedUserIds: config.allowedUserIds,
+    assistant: createAssistant(ollamaClient),
+    logger: console,
+  });
   stopOnSignals(() => bot.stop());
 
   // bot.start() memanggil Telegram (deleteWebhook dan getMe) sebelum masuk loop
@@ -55,7 +90,9 @@ async function main(): Promise<void> {
   // start gagal (token salah -> 401, ada instance lain -> 409).
   await bot.start({
     onStart: (botInfo) => {
-      console.info(`Kera is running as @${botInfo.username} (long polling). Press Ctrl+C to stop.`);
+      console.info(
+        `Kera is running as @${botInfo.username} (long polling). Press Ctrl+C to stop.`,
+      );
     },
   });
 

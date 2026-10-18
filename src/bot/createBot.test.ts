@@ -1,15 +1,16 @@
-import { GrammyError, HttpError } from "grammy";
 import type { Update, UserFromGetMe } from "grammy/types";
 import { describe, expect, it } from "vitest";
-import type { Config } from "../config/env.ts";
-import { createBot, describeError } from "./createBot.ts";
+import type { Assistant } from "../ai/assistant.ts";
+import { OllamaError } from "../ai/ollamaClient.ts";
+import { createBot } from "./createBot.ts";
 import type { Logger } from "./logger.ts";
 
 // Test integrasi createBot tanpa jaringan.
-// Update palsu disuntikkan dengan bot.handleUpdate(), dan setiap panggilan ke Telegram
-// dicegat oleh API transformer sehingga tidak ada request yang benar-benar keluar.
-// Yang TIDAK diverifikasi di sini: koneksi asli ke Telegram, validitas token, dan
-// bentuk update asli dari server. Itu dicek lewat uji manual (lihat milestone-01.md).
+// Update palsu disuntikkan dengan bot.handleUpdate(), setiap panggilan ke Telegram
+// dicegat oleh API transformer, dan assistant diganti versi palsu.
+// Yang TIDAK diverifikasi di sini: koneksi asli ke Telegram, validitas token, bentuk
+// update asli dari server, dan jawaban model asli. Itu dicek lewat uji manual
+// (milestone-01.md dan milestone-02.md) dan ollamaClient.integration.test.ts.
 
 const OWNER_ID = 111;
 const STRANGER_ID = 999;
@@ -30,34 +31,54 @@ const fakeBotInfo = {
 
 type ApiCall = { method: string; payload: Record<string, unknown> };
 
-// Buat bot untuk test beserta rekaman panggilan API dan log.
-// `failWith` (opsional) membuat setiap panggilan API melempar error, untuk menguji bot.catch.
-function setup(options: { failWith?: Error } = {}) {
+type SetupOptions = {
+  // Membuat setiap panggilan API Telegram melempar error ini.
+  failWith?: Error;
+  // Perilaku assistant palsu: string = jawaban, Error = dilempar.
+  assistantResult?: string | Error;
+};
+
+// Buat bot untuk test beserta rekaman panggilan API, log, dan pesan yang diterima assistant.
+function setup(options: SetupOptions = {}) {
   const calls: ApiCall[] = [];
   const logs: { level: keyof Logger; message: string }[] = [];
+  const assistantInputs: string[] = [];
+
   const logger: Logger = {
     info: (message: string) => logs.push({ level: "info", message }),
     warn: (message: string) => logs.push({ level: "warn", message }),
     error: (message: string) => logs.push({ level: "error", message }),
   };
 
-  const config: Config = {
-    telegramBotToken: "123456:TEST-token",
-    allowedUserIds: new Set([OWNER_ID]),
+  const assistant: Assistant = {
+    async reply(userText) {
+      assistantInputs.push(userText);
+      const result = options.assistantResult ?? `jawaban untuk: ${userText}`;
+      if (result instanceof Error) {
+        throw result;
+      }
+      return result;
+    },
   };
 
-  const bot = createBot(config, logger, { botInfo: fakeBotInfo });
+  const bot = createBot(
+    { token: "123456:TEST-token", allowedUserIds: new Set([OWNER_ID]), assistant, logger },
+    { botInfo: fakeBotInfo },
+  );
 
   bot.api.config.use(async (_prev, method, payload) => {
     calls.push({ method, payload: payload as Record<string, unknown> });
     if (options.failWith) {
       throw options.failWith;
     }
-    // Jawaban sukses minimal. Handler di Milestone 1 tidak memakai isi result.
+    // Jawaban sukses minimal. Handler tidak memakai isi result.
     return { ok: true, result: true as never };
   });
 
-  return { bot, calls, logs };
+  const sentTexts = () => calls.filter((c) => c.method === "sendMessage").map((c) => String(c.payload.text));
+  const logsAt = (level: keyof Logger) => logs.filter((l) => l.level === level);
+
+  return { bot, calls, logs, assistantInputs, sentTexts, logsAt };
 }
 
 let nextUpdateId = 1;
@@ -80,28 +101,68 @@ function textUpdate(fromId: number, text: string): Update {
   };
 }
 
-describe("createBot", () => {
-  it("replies to /start for the owner", async () => {
-    const { bot, calls } = setup();
+describe("createBot: commands", () => {
+  it("replies to /start without calling the assistant", async () => {
+    const { bot, sentTexts, assistantInputs } = setup();
     await bot.handleUpdate(textUpdate(OWNER_ID, "/start"));
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]!.method).toBe("sendMessage");
-    expect(calls[0]!.payload.chat_id).toBe(OWNER_ID);
-    expect(String(calls[0]!.payload.text)).toContain("Aku Kera");
+    expect(sentTexts()).toHaveLength(1);
+    expect(sentTexts()[0]).toContain("Aku Kera");
+    expect(assistantInputs).toEqual([]);
   });
 
-  it("echoes text messages for the owner", async () => {
-    const { bot, calls } = setup();
-    await bot.handleUpdate(textUpdate(OWNER_ID, "halo kera"));
+  it("replies to /ping without calling the assistant", async () => {
+    const { bot, sentTexts, assistantInputs } = setup({ assistantResult: new OllamaError("unreachable", "down") });
+    await bot.handleUpdate(textUpdate(OWNER_ID, "/ping"));
 
-    expect(calls).toEqual([
-      { method: "sendMessage", payload: { chat_id: OWNER_ID, text: "Kamu bilang: halo kera" } },
-    ]);
+    expect(sentTexts()).toEqual(["pong"]);
+    expect(assistantInputs).toEqual([]);
+  });
+});
+
+describe("createBot: text messages", () => {
+  it("shows typing, then sends the assistant's answer", async () => {
+    const { bot, calls, assistantInputs } = setup({ assistantResult: "Jakarta." });
+    await bot.handleUpdate(textUpdate(OWNER_ID, "ibu kota indonesia?"));
+
+    expect(assistantInputs).toEqual(["ibu kota indonesia?"]);
+    expect(calls.map((c) => c.method)).toEqual(["sendChatAction", "sendMessage"]);
+    expect(calls[0]!.payload).toEqual({ chat_id: OWNER_ID, action: "typing" });
+    expect(calls[1]!.payload).toEqual({ chat_id: OWNER_ID, text: "Jakarta." });
+  });
+
+  it("splits a long answer into several messages", async () => {
+    const longAnswer = Array.from({ length: 2000 }, (_, i) => `kata${i}`).join(" ");
+    const { bot, sentTexts } = setup({ assistantResult: longAnswer });
+    await bot.handleUpdate(textUpdate(OWNER_ID, "ceritakan panjang"));
+
+    expect(sentTexts().length).toBeGreaterThan(1);
+    expect(sentTexts().join(" ")).toBe(longAnswer);
+  });
+
+  it("logs metadata only, never the message or answer text", async () => {
+    const { bot, logsAt } = setup({ assistantResult: "jawaban rahasia" });
+    await bot.handleUpdate(textUpdate(OWNER_ID, "pertanyaan rahasia"));
+
+    expect(logsAt("info")).toHaveLength(1);
+    expect(logsAt("info")[0]!.message).toMatch(/^Replied to update \d+ in \d+ ms \(1 message\(s\)\)$/);
+  });
+
+  it("turns an assistant failure into a friendly reply and an error log", async () => {
+    const { bot, sentTexts, logsAt } = setup({
+      assistantResult: new OllamaError("unreachable", "Cannot reach Ollama at http://127.0.0.1:11434/api/chat"),
+    });
+    await bot.handleUpdate(textUpdate(OWNER_ID, "halo"));
+
+    expect(sentTexts()).toHaveLength(1);
+    expect(sentTexts()[0]).toContain("Pastikan Ollama sedang jalan");
+    expect(sentTexts()[0]).not.toContain("127.0.0.1");
+    expect(logsAt("error")).toHaveLength(1);
+    expect(logsAt("error")[0]!.message).toContain("Ollama error (unreachable)");
   });
 
   it("answers non-text messages with an explanation", async () => {
-    const { bot, calls } = setup();
+    const { bot, sentTexts, assistantInputs } = setup();
     await bot.handleUpdate({
       update_id: nextUpdateId++,
       message: {
@@ -121,70 +182,40 @@ describe("createBot", () => {
       },
     });
 
-    expect(calls).toHaveLength(1);
-    expect(String(calls[0]!.payload.text)).toContain("baru bisa membaca pesan teks");
+    expect(sentTexts()).toHaveLength(1);
+    expect(sentTexts()[0]).toContain("baru bisa membaca pesan teks");
+    expect(assistantInputs).toEqual([]);
   });
+});
 
-  it("ignores strangers without replying and logs their ID", async () => {
-    const { bot, calls, logs } = setup();
-    await bot.handleUpdate(textUpdate(STRANGER_ID, "/start"));
+describe("createBot: authorization and errors", () => {
+  it("ignores strangers without replying or calling the assistant", async () => {
+    const { bot, calls, logs, assistantInputs } = setup();
+    await bot.handleUpdate(textUpdate(STRANGER_ID, "halo"));
 
     expect(calls).toHaveLength(0);
+    expect(assistantInputs).toEqual([]);
     expect(logs).toHaveLength(1);
     expect(logs[0]!.level).toBe("warn");
     expect(logs[0]!.message).toContain(`id=${STRANGER_ID}`);
   });
 
-  it("logs handler errors through the error boundary instead of throwing", async () => {
-    const { bot, logs } = setup({ failWith: new Error("boom") });
+  it("logs Telegram failures through the error boundary instead of throwing", async () => {
+    const { bot, logsAt } = setup({ failWith: new Error("boom") });
 
     // Kalau error boundary tidak terpasang, handleUpdate akan melempar dan test ini gagal.
+    // sendChatAction juga gagal, tapi itu sengaja diabaikan (typing bersifat best effort).
     await bot.handleUpdate(textUpdate(OWNER_ID, "halo"));
 
-    expect(logs).toHaveLength(1);
-    expect(logs[0]!.level).toBe("error");
-    expect(logs[0]!.message).toBe(`Error while handling update ${nextUpdateId - 1}: Error: boom`);
+    expect(logsAt("error")).toHaveLength(1);
+    expect(logsAt("error")[0]!.message).toBe(`Error while handling update ${nextUpdateId - 1}: Error: boom`);
   });
 
   it("keeps handling later updates after an error", async () => {
-    const failing = setup({ failWith: new Error("boom") });
-    await failing.bot.handleUpdate(textUpdate(OWNER_ID, "pertama"));
-    await failing.bot.handleUpdate(textUpdate(OWNER_ID, "kedua"));
+    const { bot, assistantInputs } = setup({ failWith: new Error("boom") });
+    await bot.handleUpdate(textUpdate(OWNER_ID, "pertama"));
+    await bot.handleUpdate(textUpdate(OWNER_ID, "kedua"));
 
-    // Dua update -> dua percobaan sendMessage, artinya error pertama tidak menghentikan bot.
-    expect(failing.calls).toHaveLength(2);
-  });
-});
-
-describe("describeError", () => {
-  it("summarizes Telegram API rejections", () => {
-    const error = new GrammyError(
-      "Call to 'sendMessage' failed!",
-      { ok: false, error_code: 403, description: "Forbidden: bot was blocked by the user" },
-      "sendMessage",
-      { chat_id: 1, text: "rahasia user" },
-    );
-
-    const summary = describeError(error);
-    expect(summary).toBe(
-      "Telegram API error 403 in sendMessage: Forbidden: bot was blocked by the user",
-    );
-    // Isi pesan (payload) tidak ikut di-log.
-    expect(summary).not.toContain("rahasia user");
-  });
-
-  it("summarizes network failures without the underlying error details", () => {
-    const cause = new Error("connect ECONNREFUSED https://api.telegram.org/bot123456:TEST-token/sendMessage");
-    const error = new HttpError("Network request for 'sendMessage' failed!", cause);
-
-    const summary = describeError(error);
-    expect(summary).toBe(
-      "Network error while contacting Telegram: Network request for 'sendMessage' failed!",
-    );
-    expect(summary).not.toContain("TEST-token");
-  });
-
-  it("handles non-Error values", () => {
-    expect(describeError("oops")).toBe("Unknown error: oops");
+    expect(assistantInputs).toEqual(["pertama", "kedua"]);
   });
 });

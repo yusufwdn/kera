@@ -79,3 +79,60 @@ describe("loadConfig", () => {
     expect(error.problems).toHaveLength(2);
   });
 });
+
+describe("loadConfig: Ollama settings", () => {
+  it("uses defaults when Ollama variables are missing", () => {
+    expect(loadConfig({ TELEGRAM_BOT_TOKEN: VALID_TOKEN }).ollama).toEqual({
+      baseUrl: "http://127.0.0.1:11434",
+      model: "qwen3:4b-instruct",
+      think: false,
+      timeoutMs: 120_000,
+    });
+  });
+
+  it("uses defaults when Ollama variables are present but empty", () => {
+    const config = loadConfig({
+      TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+      OLLAMA_BASE_URL: "",
+      OLLAMA_MODEL: "",
+      OLLAMA_THINK: "",
+      OLLAMA_TIMEOUT_MS: "",
+    });
+    expect(config.ollama.model).toBe("qwen3:4b-instruct");
+    expect(config.ollama.timeoutMs).toBe(120_000);
+  });
+
+  it("reads custom values", () => {
+    const config = loadConfig({
+      TELEGRAM_BOT_TOKEN: VALID_TOKEN,
+      OLLAMA_BASE_URL: "http://localhost:11434/",
+      OLLAMA_MODEL: " qwen3:4b ",
+      OLLAMA_THINK: "true",
+      OLLAMA_TIMEOUT_MS: "5000",
+    });
+    expect(config.ollama).toEqual({
+      baseUrl: "http://localhost:11434",
+      model: "qwen3:4b",
+      think: true,
+      timeoutMs: 5000,
+    });
+  });
+
+  it('parses OLLAMA_THINK="false" as false', () => {
+    const config = loadConfig({ TELEGRAM_BOT_TOKEN: VALID_TOKEN, OLLAMA_THINK: "false" });
+    expect(config.ollama.think).toBe(false);
+  });
+
+  it.each([
+    ["OLLAMA_BASE_URL", "localhost:11434"],
+    ["OLLAMA_BASE_URL", "ftp://127.0.0.1"],
+    ["OLLAMA_THINK", "yes"],
+    ["OLLAMA_TIMEOUT_MS", "abc"],
+    ["OLLAMA_TIMEOUT_MS", "500"],
+    ["OLLAMA_TIMEOUT_MS", "999999"],
+  ])("rejects %s=%s", (variable, value) => {
+    const error = expectConfigError({ TELEGRAM_BOT_TOKEN: VALID_TOKEN, [variable]: value });
+    expect(error.problems).toHaveLength(1);
+    expect(error.problems[0]).toMatch(new RegExp(`^${variable}: `));
+  });
+});

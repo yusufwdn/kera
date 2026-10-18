@@ -289,6 +289,13 @@ hasilnya di sini setelah dicoba.
 3. Kenapa `isUserAllowed` menerima `number | undefined`, bukan `number`?
 4. Tambahkan command `/ping` yang membalas `pong`, lengkap dengan test di `createBot.test.ts`.
 
+## Catatan setelah Milestone 2
+
+Dokumen ini mencatat kondisi kode di akhir Milestone 1. Perubahan sesudahnya:
+`buildEchoReply` dihapus (diganti `splitMessage` di `src/bot/replyChunks.ts`),
+`describeError` dipindah ke `src/errors.ts`, dan `createBot` menerima `BotDependencies`.
+Lihat `milestone-02.md`.
+
 ## 21. Gap dan milestone berikutnya
 
 - Balasan masih echo.

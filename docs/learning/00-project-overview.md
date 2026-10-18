@@ -47,7 +47,7 @@ Contoh use case:
 | --- | --- | --- |
 | 0 | Setup project, toolchain, dokumentasi awal | Selesai |
 | 1 | Bot Telegram dasar: `/start`, terima pesan, allowlist | Selesai |
-| 2 | Hubungkan Telegram ke Ollama (`qwen3:4b`) | Direncanakan |
+| 2 | Hubungkan Telegram ke Ollama (`qwen3:4b-instruct`, lihat ADR-0003) | Selesai |
 | 3 | Konteks percakapan terbatas, terisolasi per chat | Direncanakan |
 | 4 | Persistensi dengan SQLite | Direncanakan |
 | 5 | Notes dan tasks | Direncanakan |
