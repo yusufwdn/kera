@@ -266,8 +266,7 @@ Semua perintah dari root project, di PowerShell.
    409 Conflict, terminal pertama tetap jalan (bisa juga ikut mencatat error 409 sesaat).
 10. Ctrl+C di terminal pertama. Harapan: `Received SIGINT, stopping Kera...` lalu `Kera stopped.`
 
-Hasil langkah 9 dan 10 di Windows belum terverifikasi saat dokumen ini ditulis; catat
-hasilnya di sini setelah dicoba.
+Langkah 1 sampai 10 sudah dicoba di Windows 11 (2026-10-18) dan sesuai harapan.
 
 ## 19. Troubleshooting
 

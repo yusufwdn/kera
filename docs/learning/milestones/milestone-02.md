@@ -331,7 +331,7 @@ mengirim keduanya bersamaan.
 9. Diamkan bot lebih dari 5 menit, kirim `halo`. Harapan: jawaban pertama sekitar 7 detik
    lebih lama (model dimuat ulang).
 
-Hasil langkah 3 sampai 9 lewat Telegram belum terverifikasi saat dokumen ini ditulis.
+Langkah 1 sampai 9 sudah dicoba lewat Telegram di Windows 11 (2026-10-18) dan sesuai harapan.
 
 ## 19. Troubleshooting
 
