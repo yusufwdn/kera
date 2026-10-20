@@ -3,6 +3,7 @@ import type { Assistant } from "../ai/assistant.ts";
 import { describeError } from "../errors.ts";
 import { createAuthMiddleware } from "./auth.ts";
 import {
+  createResetHandler,
   createTextHandler,
   handlePing,
   handleStart,
@@ -50,6 +51,7 @@ export function createBot(
 
   protectedBot.command("start", handleStart);
   protectedBot.command("ping", handlePing);
+  protectedBot.command("reset", createResetHandler(deps.assistant));
   protectedBot.on("message:text", createTextHandler(deps.assistant, logger));
   protectedBot.on("message", handleUnsupportedMessage);
 

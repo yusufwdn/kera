@@ -43,6 +43,8 @@ function setup(options: SetupOptions = {}) {
   const calls: ApiCall[] = [];
   const logs: { level: keyof Logger; message: string }[] = [];
   const assistantInputs: string[] = [];
+  const assistantChatIds: number[] = [];
+  const resetChatIds: number[] = [];
 
   const logger: Logger = {
     info: (message: string) => logs.push({ level: "info", message }),
@@ -51,13 +53,17 @@ function setup(options: SetupOptions = {}) {
   };
 
   const assistant: Assistant = {
-    async reply(userText) {
+    async reply(chatId, userText) {
+      assistantChatIds.push(chatId);
       assistantInputs.push(userText);
       const result = options.assistantResult ?? `jawaban untuk: ${userText}`;
       if (result instanceof Error) {
         throw result;
       }
-      return result;
+      return { text: result, promptTokens: 42, historyTurns: 3 };
+    },
+    async resetConversation(chatId) {
+      resetChatIds.push(chatId);
     },
   };
 
@@ -78,7 +84,7 @@ function setup(options: SetupOptions = {}) {
   const sentTexts = () => calls.filter((c) => c.method === "sendMessage").map((c) => String(c.payload.text));
   const logsAt = (level: keyof Logger) => logs.filter((l) => l.level === level);
 
-  return { bot, calls, logs, assistantInputs, sentTexts, logsAt };
+  return { bot, calls, logs, assistantInputs, assistantChatIds, resetChatIds, sentTexts, logsAt };
 }
 
 let nextUpdateId = 1;
@@ -118,14 +124,26 @@ describe("createBot: commands", () => {
     expect(sentTexts()).toEqual(["pong"]);
     expect(assistantInputs).toEqual([]);
   });
+
+  it("clears the history of this chat on /reset without calling the model", async () => {
+    const { bot, sentTexts, assistantInputs, resetChatIds } = setup();
+    await bot.handleUpdate(textUpdate(OWNER_ID, "/reset"));
+
+    expect(resetChatIds).toEqual([OWNER_ID]);
+    expect(sentTexts()).toHaveLength(1);
+    expect(sentTexts()[0]).toContain("mulai dari awal");
+    expect(assistantInputs).toEqual([]);
+  });
 });
 
 describe("createBot: text messages", () => {
   it("shows typing, then sends the assistant's answer", async () => {
-    const { bot, calls, assistantInputs } = setup({ assistantResult: "Jakarta." });
+    const { bot, calls, assistantInputs, assistantChatIds } = setup({ assistantResult: "Jakarta." });
     await bot.handleUpdate(textUpdate(OWNER_ID, "ibu kota indonesia?"));
 
     expect(assistantInputs).toEqual(["ibu kota indonesia?"]);
+    // Riwayat disimpan per chat, jadi chat.id harus sampai ke assistant.
+    expect(assistantChatIds).toEqual([OWNER_ID]);
     expect(calls.map((c) => c.method)).toEqual(["sendChatAction", "sendMessage"]);
     expect(calls[0]!.payload).toEqual({ chat_id: OWNER_ID, action: "typing" });
     expect(calls[1]!.payload).toEqual({ chat_id: OWNER_ID, text: "Jakarta." });
@@ -145,7 +163,9 @@ describe("createBot: text messages", () => {
     await bot.handleUpdate(textUpdate(OWNER_ID, "pertanyaan rahasia"));
 
     expect(logsAt("info")).toHaveLength(1);
-    expect(logsAt("info")[0]!.message).toMatch(/^Replied to update \d+ in \d+ ms \(1 message\(s\)\)$/);
+    expect(logsAt("info")[0]!.message).toMatch(
+      /^Replied to update \d+ in \d+ ms \(1 message\(s\), prompt 42 tokens, history 3 turn\(s\)\)$/,
+    );
   });
 
   it("turns an assistant failure into a friendly reply and an error log", async () => {

@@ -29,6 +29,7 @@ function setup(respond: (request: RecordedRequest) => Promise<Response>) {
     model: "test-model",
     think: false,
     timeoutMs: 1_000,
+    numCtx: 2048,
     maxOutputTokens: 256,
     fetch: fakeFetch as typeof fetch,
   });
@@ -67,12 +68,17 @@ describe("ollamaClient.chat", () => {
         message: { role: "assistant", content: "Halo juga!" },
         done: true,
         done_reason: "stop",
+        prompt_eval_count: 12,
       }),
     );
 
     const result = await client.chat(USER_MESSAGE);
 
-    expect(result).toEqual({ content: "Halo juga!", doneReason: "stop" });
+    expect(result).toEqual({
+      content: "Halo juga!",
+      doneReason: "stop",
+      promptTokens: 12,
+    });
     expect(requests).toHaveLength(1);
     expect(requests[0]!.url).toBe("http://ollama.test/api/chat");
     expect(requests[0]!.init.method).toBe("POST");
@@ -81,7 +87,7 @@ describe("ollamaClient.chat", () => {
       messages: USER_MESSAGE,
       stream: false,
       think: false,
-      options: { num_predict: 256 },
+      options: { num_predict: 256, num_ctx: 2048 },
     });
     expect(requests[0]!.init.signal).toBeInstanceOf(AbortSignal);
   });
@@ -93,7 +99,10 @@ describe("ollamaClient.chat", () => {
         done_reason: "length",
       }),
     );
-    expect((await client.chat(USER_MESSAGE)).doneReason).toBe("length");
+    const result = await client.chat(USER_MESSAGE);
+    expect(result.doneReason).toBe("length");
+    // Field opsional yang tidak dikirim Ollama menjadi undefined, bukan error.
+    expect(result.promptTokens).toBeUndefined();
   });
 
   it("maps a refused connection to 'unreachable'", async () => {

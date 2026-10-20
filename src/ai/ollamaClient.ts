@@ -10,10 +10,13 @@ export type ChatMessage = {
 
 // Hasil satu panggilan chat yang sudah divalidasi.
 // `doneReason` "stop" berarti model selesai sendiri, "length" berarti terpotong oleh
-// batas maxOutputTokens. undefined kalau Ollama tidak mengirim field itu.
+// batas maxOutputTokens. `promptTokens` adalah jumlah token input yang dibaca model
+// (field `prompt_eval_count`), dipakai untuk log dan untuk memeriksa perkiraan di
+// contextWindow.ts. Keduanya undefined kalau Ollama tidak mengirim field itu.
 export type ChatResult = {
   content: string;
   doneReason: string | undefined;
+  promptTokens: number | undefined;
 };
 
 // Kategori kegagalan. Dipakai handler untuk memilih pesan yang tepat untuk user,
@@ -59,12 +62,13 @@ export type OllamaClientOptions = OllamaConfig & {
 const HEALTH_CHECK_TIMEOUT_MS = 5_000;
 
 // Schema respon POST /api/chat (stream: false). Hanya field yang dipakai yang divalidasi;
-// field lain (durasi, jumlah token) dibiarkan dan dibuang oleh zod.
+// field lain (durasi, jumlah token output) dibiarkan dan dibuang oleh zod.
 const chatResponseSchema = z.object({
   message: z.object({
     content: z.string(),
   }),
   done_reason: z.string().optional(),
+  prompt_eval_count: z.number().int().nonnegative().optional(),
 });
 
 // Schema body error Ollama, contoh: {"error":"model 'x' not found"}.
@@ -132,7 +136,14 @@ export function createOllamaClient(options: OllamaClientOptions): OllamaClient {
           messages,
           stream: false,
           think: options.think,
-          options: { num_predict: options.maxOutputTokens },
+          // num_ctx dikirim di setiap request; tanpa ini Ollama memakai ukuran bawaannya
+          // (4096). Kalau percakapan lebih panjang dari num_ctx, Ollama membuang pesan
+          // lama diam-diam tanpa error. Satu pesan yang sendirian sudah lebih panjang
+          // ditolak dengan HTTP 400. Lihat ADR-0004.
+          options: {
+            num_predict: options.maxOutputTokens,
+            num_ctx: options.numCtx,
+          },
         },
         options.timeoutMs,
       );
@@ -148,6 +159,7 @@ export function createOllamaClient(options: OllamaClientOptions): OllamaClient {
       return {
         content: parsed.data.message.content,
         doneReason: parsed.data.done_reason,
+        promptTokens: parsed.data.prompt_eval_count,
       };
     },
 

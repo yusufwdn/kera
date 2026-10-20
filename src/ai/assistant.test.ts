@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { createInMemoryConversationStore } from "../conversation/conversationStore.ts";
 import {
   cleanModelOutput,
   createAssistant,
@@ -13,12 +14,16 @@ import {
   type OllamaClient,
 } from "./ollamaClient.ts";
 
-// Client palsu yang merekam messages yang dikirim dan mengembalikan hasil yang ditentukan test.
-function fakeClient(result: ChatResult | Error) {
+const CHAT_ID = 111;
+
+// Client palsu yang merekam messages yang dikirim dan menjawab dari daftar hasil
+// sesuai urutan panggilan (hasil terakhir dipakai ulang kalau panggilan lebih banyak).
+function fakeClient(...results: (ChatResult | Error)[]) {
   const sent: (readonly ChatMessage[])[] = [];
   const client: OllamaClient = {
     async chat(messages) {
       sent.push(messages);
+      const result = results[Math.min(sent.length - 1, results.length - 1)]!;
       if (result instanceof Error) {
         throw result;
       }
@@ -29,13 +34,21 @@ function fakeClient(result: ChatResult | Error) {
   return { client, sent };
 }
 
+function answer(content: string, doneReason = "stop"): ChatResult {
+  return { content, doneReason, promptTokens: 42 };
+}
+
+// Rakit assistant dengan store memori baru. Budget besar kecuali test butuh yang kecil.
+function setup(client: OllamaClient, promptTokenBudget = 7168) {
+  const store = createInMemoryConversationStore();
+  const assistant = createAssistant({ client, store, promptTokenBudget });
+  return { assistant, store };
+}
+
 describe("assistant.reply", () => {
-  it("sends the system prompt followed by the user message", async () => {
-    const { client, sent } = fakeClient({
-      content: "Halo!",
-      doneReason: "stop",
-    });
-    await createAssistant(client).reply("hai kera");
+  it("sends the system prompt followed by the user message on a new chat", async () => {
+    const { client, sent } = fakeClient(answer("Halo!"));
+    await setup(client).assistant.reply(CHAT_ID, "hai kera");
 
     expect(sent).toEqual([
       [
@@ -45,34 +58,99 @@ describe("assistant.reply", () => {
     ]);
   });
 
-  it("returns the cleaned model answer", async () => {
-    const { client } = fakeClient({
-      content: "  Jakarta.  \n",
-      doneReason: "stop",
+  it("returns the cleaned answer with log details", async () => {
+    const { client } = fakeClient(answer("  Jakarta.  \n"));
+    expect(await setup(client).assistant.reply(CHAT_ID, "ibu kota?")).toEqual({
+      text: "Jakarta.",
+      promptTokens: 42,
+      historyTurns: 0,
     });
-    expect(await createAssistant(client).reply("ibu kota?")).toBe("Jakarta.");
   });
 
-  it("adds a notice when the answer was truncated", async () => {
-    const { client } = fakeClient({
-      content: "Bagian pertama",
-      doneReason: "length",
-    });
-    expect(await createAssistant(client).reply("cerita panjang")).toBe(
-      "Bagian pertama" + TRUNCATED_NOTICE,
-    );
+  it("includes earlier turns of the same chat in the next request", async () => {
+    const { client, sent } = fakeClient(answer("Soekarno."), answer("Surabaya."));
+    const { assistant } = setup(client);
+
+    await assistant.reply(CHAT_ID, "siapa presiden pertama?");
+    const second = await assistant.reply(CHAT_ID, "dia lahir di mana?");
+
+    expect(sent[1]).toEqual([
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: "siapa presiden pertama?" },
+      { role: "assistant", content: "Soekarno." },
+      { role: "user", content: "dia lahir di mana?" },
+    ]);
+    expect(second.historyTurns).toBe(1);
   });
 
-  it("falls back to a friendly message when the model returns nothing", async () => {
-    const { client } = fakeClient({ content: "   ", doneReason: "stop" });
-    expect(await createAssistant(client).reply("?")).toBe(EMPTY_REPLY_FALLBACK);
+  it("does not mix history between chats", async () => {
+    const { client, sent } = fakeClient(answer("A"), answer("B"));
+    const { assistant } = setup(client);
+
+    await assistant.reply(111, "rahasia chat 111");
+    await assistant.reply(222, "halo");
+
+    expect(sent[1]).toEqual([
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: "halo" },
+    ]);
   });
 
-  it("lets client errors propagate to the caller", async () => {
+  it("drops old turns that do not fit the token budget", async () => {
+    const { client, sent } = fakeClient(answer("ok"));
+    // Cukup untuk system + pesan baru, tapi tidak untuk giliran sebelumnya.
+    const { assistant, store } = setup(client, 600);
+    await store.appendTurn(CHAT_ID, { user: "x".repeat(1000), assistant: "y" });
+
+    const result = await assistant.reply(CHAT_ID, "halo");
+
+    expect(result.historyTurns).toBe(0);
+    expect(sent[0]).toHaveLength(2);
+  });
+
+  it("stores the answer without the truncation notice", async () => {
+    const { client } = fakeClient(answer("Bagian pertama", "length"));
+    const { assistant, store } = setup(client);
+
+    const result = await assistant.reply(CHAT_ID, "cerita panjang");
+
+    expect(result.text).toBe("Bagian pertama" + TRUNCATED_NOTICE);
+    expect(await store.getHistory(CHAT_ID)).toEqual([
+      { user: "cerita panjang", assistant: "Bagian pertama" },
+    ]);
+  });
+
+  it("falls back to a friendly message and stores nothing when the model returns nothing", async () => {
+    const { client } = fakeClient(answer("   "));
+    const { assistant, store } = setup(client);
+
+    expect((await assistant.reply(CHAT_ID, "?")).text).toBe(EMPTY_REPLY_FALLBACK);
+    expect(await store.getHistory(CHAT_ID)).toEqual([]);
+  });
+
+  it("lets client errors propagate and leaves history unchanged", async () => {
     const { client } = fakeClient(new OllamaError("unreachable", "down"));
-    await expect(createAssistant(client).reply("halo")).rejects.toBeInstanceOf(
-      OllamaError,
-    );
+    const { assistant, store } = setup(client);
+    await store.appendTurn(CHAT_ID, { user: "q", assistant: "a" });
+
+    await expect(assistant.reply(CHAT_ID, "halo")).rejects.toBeInstanceOf(OllamaError);
+    expect(await store.getHistory(CHAT_ID)).toEqual([{ user: "q", assistant: "a" }]);
+  });
+});
+
+describe("assistant.resetConversation", () => {
+  it("makes the next reply start without history", async () => {
+    const { client, sent } = fakeClient(answer("Soekarno."), answer("Siapa?"));
+    const { assistant } = setup(client);
+
+    await assistant.reply(CHAT_ID, "siapa presiden pertama?");
+    await assistant.resetConversation(CHAT_ID);
+    await assistant.reply(CHAT_ID, "dia siapa tadi?");
+
+    expect(sent[1]).toEqual([
+      { role: "system", content: SYSTEM_PROMPT },
+      { role: "user", content: "dia siapa tadi?" },
+    ]);
   });
 });
 

@@ -20,6 +20,7 @@ const client = createOllamaClient({
   model,
   think: false,
   timeoutMs: 120_000,
+  numCtx: 8192,
   maxOutputTokens: 64,
 });
 
@@ -39,6 +40,51 @@ describe(`real Ollama (${model} at ${baseUrl})`, () => {
 
       expect(result.content.trim().length).toBeGreaterThan(0);
       expect(["stop", "length"]).toContain(result.doneReason);
+      expect(result.promptTokens).toBeGreaterThan(0);
+    },
+  );
+
+  // Dua test berikut mendokumentasikan perilaku Ollama yang menjadi alasan riwayat
+  // dipotong sendiri di contextWindow.ts dan OLLAMA_NUM_CTX minimal 4096.
+  // Kalau Ollama mengubah perilakunya, test ini gagal dan desainnya perlu ditinjau ulang.
+  // num_ctx 2048 sengaja di bawah minimum config, hanya untuk memancing batasnya.
+  // Kalimat ini sekitar 12 token (diukur dengan prompt_eval_count).
+  const sentence = "Kemarin aku pergi ke pasar bersama ibu. ";
+  const smallContext = createOllamaClient({
+    baseUrl,
+    model,
+    think: false,
+    timeoutMs: 120_000,
+    numCtx: 2048,
+    maxOutputTokens: 5,
+  });
+
+  it(
+    "silently drops old messages when the conversation is longer than num_ctx",
+    { timeout: 130_000 },
+    async () => {
+      // 8 pesan x sekitar 300 token = sekitar 2400 token, lebih dari 2048.
+      const messages = Array.from({ length: 8 }, () => ({
+        role: "user" as const,
+        content: sentence.repeat(25),
+      }));
+      const result = await smallContext.chat(messages);
+      expect(result.promptTokens).toBeLessThanOrEqual(2048);
+    },
+  );
+
+  it(
+    "rejects a single message that is longer than num_ctx",
+    { timeout: 130_000 },
+    async () => {
+      // Sekitar 2770 token dalam satu pesan.
+      const result = smallContext.chat([
+        { role: "user", content: sentence.repeat(230) },
+      ]);
+      await expect(result).rejects.toMatchObject({
+        kind: "http_error",
+        message: expect.stringContaining("exceeds the available context size"),
+      });
     },
   );
 
@@ -51,6 +97,7 @@ describe(`real Ollama (${model} at ${baseUrl})`, () => {
         model,
         think: false,
         timeoutMs: 120_000,
+        numCtx: 8192,
         maxOutputTokens: 5,
       });
       const result = await tiny.chat([
@@ -69,6 +116,7 @@ describe(`real Ollama (${model} at ${baseUrl})`, () => {
       model: "kera-model-that-does-not-exist:0b",
       think: false,
       timeoutMs: 10_000,
+      numCtx: 8192,
       maxOutputTokens: 5,
     });
     await expect(missing.checkModelAvailable()).rejects.toMatchObject({

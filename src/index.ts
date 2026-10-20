@@ -2,12 +2,16 @@ import { createAssistant, MAX_REPLY_TOKENS } from "./ai/assistant.ts";
 import { createOllamaClient, type OllamaClient } from "./ai/ollamaClient.ts";
 import { createBot } from "./bot/createBot.ts";
 import { ConfigError, loadConfig, type Config } from "./config/env.ts";
+import { promptTokenBudget } from "./conversation/contextWindow.ts";
+import { createInMemoryConversationStore } from "./conversation/conversationStore.ts";
 import { describeError } from "./errors.ts";
 
 // Entry point aplikasi Kera. Dijalankan oleh `npm run dev` / `npm start`.
 // Tanggung jawab file ini hanya "merakit dan menjalankan":
-// baca config -> buat ollamaClient -> assistant -> bot -> jalankan long polling -> berhenti rapi.
-// Logika bot ada di src/bot/, integrasi model di src/ai/, validasi config di src/config/.
+// baca config -> buat ollamaClient -> assistant (dengan store riwayat) -> bot
+// -> jalankan long polling -> berhenti rapi.
+// Logika bot ada di src/bot/, integrasi model di src/ai/, riwayat percakapan di
+// src/conversation/, validasi config di src/config/.
 
 // Baca config; kalau tidak valid, cetak daftar masalah lalu keluar dengan kode 1.
 // Dipisah dari main() supaya pesan error config (masalah setup) tampil rapi dan
@@ -37,7 +41,8 @@ async function warnIfModelUnavailable(
   try {
     await client.checkModelAvailable();
     console.info(
-      `Ollama is ready with model ${config.ollama.model} at ${config.ollama.baseUrl}`,
+      `Ollama is ready with model ${config.ollama.model} at ${config.ollama.baseUrl} ` +
+        `(context ${config.ollama.numCtx} tokens)`,
     );
   } catch (error) {
     console.warn(
@@ -75,11 +80,21 @@ async function main(): Promise<void> {
     maxOutputTokens: MAX_REPLY_TOKENS,
   });
   await warnIfModelUnavailable(ollamaClient, config);
+  const budget = promptTokenBudget(config.ollama.numCtx, MAX_REPLY_TOKENS);
+
+  const assistant = createAssistant({
+    client: ollamaClient,
+    store: createInMemoryConversationStore(),
+    promptTokenBudget: budget,
+  });
+
+  console.info(`Prompt token budget for assistant: ${budget} tokens`);
+  console.info(`Max reply tokens for assistant: ${MAX_REPLY_TOKENS} tokens`);
 
   const bot = createBot({
     token: config.telegramBotToken,
     allowedUserIds: config.allowedUserIds,
-    assistant: createAssistant(ollamaClient),
+    assistant,
     logger: console,
   });
   stopOnSignals(() => bot.stop());

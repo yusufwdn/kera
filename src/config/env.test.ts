@@ -87,6 +87,7 @@ describe("loadConfig: Ollama settings", () => {
       model: "qwen3:4b-instruct",
       think: false,
       timeoutMs: 120_000,
+      numCtx: 8192,
     });
   });
 
@@ -97,9 +98,11 @@ describe("loadConfig: Ollama settings", () => {
       OLLAMA_MODEL: "",
       OLLAMA_THINK: "",
       OLLAMA_TIMEOUT_MS: "",
+      OLLAMA_NUM_CTX: "",
     });
     expect(config.ollama.model).toBe("qwen3:4b-instruct");
     expect(config.ollama.timeoutMs).toBe(120_000);
+    expect(config.ollama.numCtx).toBe(8192);
   });
 
   it("reads custom values", () => {
@@ -109,12 +112,14 @@ describe("loadConfig: Ollama settings", () => {
       OLLAMA_MODEL: " qwen3:4b ",
       OLLAMA_THINK: "true",
       OLLAMA_TIMEOUT_MS: "5000",
+      OLLAMA_NUM_CTX: "4096",
     });
     expect(config.ollama).toEqual({
       baseUrl: "http://localhost:11434",
       model: "qwen3:4b",
       think: true,
       timeoutMs: 5000,
+      numCtx: 4096,
     });
   });
 
@@ -130,6 +135,9 @@ describe("loadConfig: Ollama settings", () => {
     ["OLLAMA_TIMEOUT_MS", "abc"],
     ["OLLAMA_TIMEOUT_MS", "500"],
     ["OLLAMA_TIMEOUT_MS", "999999"],
+    ["OLLAMA_NUM_CTX", "8k"],
+    ["OLLAMA_NUM_CTX", "2048"],
+    ["OLLAMA_NUM_CTX", "200000"],
   ])("rejects %s=%s", (variable, value) => {
     const error = expectConfigError({ TELEGRAM_BOT_TOKEN: VALID_TOKEN, [variable]: value });
     expect(error.problems).toHaveLength(1);

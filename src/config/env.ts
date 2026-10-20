@@ -15,11 +15,15 @@ export type OllamaConfig = {
   model: string;
   think: boolean;
   timeoutMs: number;
+  // Ukuran context window (option `num_ctx` Ollama), dalam token: batas total system
+  // prompt + riwayat + pesan baru + jawaban. Lihat ADR-0004.
+  numCtx: number;
 };
 
 export const DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434";
 export const DEFAULT_OLLAMA_MODEL = "qwen3:4b-instruct";
 export const DEFAULT_OLLAMA_TIMEOUT_MS = 120_000;
+export const DEFAULT_OLLAMA_NUM_CTX = 8192;
 
 // Error khusus untuk konfigurasi tidak valid.
 // Dilempar oleh loadConfig() dan ditangkap di index.ts untuk menampilkan pesan lalu exit.
@@ -109,6 +113,21 @@ const envSchema = z.object({
         .max(600_000, "must be at most 600000"),
     )
     .default(DEFAULT_OLLAMA_TIMEOUT_MS),
+  // Minimal 4096: pesan Telegram terpanjang (4096 karakter, sekitar 1400 token) ditambah
+  // system prompt dan ruang jawaban (1024 token) harus muat. Ollama menolak dengan
+  // HTTP 400 kalau satu pesan saja sudah melebihi num_ctx. Batas atas hanya mencegah
+  // salah ketik; 16384 di GPU 6 GB sudah sebagian pindah ke CPU (ADR-0004).
+  OLLAMA_NUM_CTX: z
+    .string()
+    .regex(/^\d+$/, "must be a whole number of tokens")
+    .transform(Number)
+    .pipe(
+      z
+        .number()
+        .min(4_096, "must be at least 4096")
+        .max(131_072, "must be at most 131072"),
+    )
+    .default(DEFAULT_OLLAMA_NUM_CTX),
 });
 
 // Anggap variabel yang isinya kosong ("") sama dengan tidak diisi.
@@ -148,6 +167,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
       model: result.data.OLLAMA_MODEL,
       think: result.data.OLLAMA_THINK,
       timeoutMs: result.data.OLLAMA_TIMEOUT_MS,
+      numCtx: result.data.OLLAMA_NUM_CTX,
     },
   };
 }

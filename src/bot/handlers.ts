@@ -1,5 +1,5 @@
 import type { CommandContext, Context, Filter } from "grammy";
-import type { Assistant } from "../ai/assistant.ts";
+import type { Assistant, AssistantReply } from "../ai/assistant.ts";
 import { OllamaError } from "../ai/ollamaClient.ts";
 import { describeError } from "../errors.ts";
 import type { Logger } from "./logger.ts";
@@ -11,8 +11,9 @@ export async function handleStart(ctx: CommandContext<Context>): Promise<void> {
   const name = ctx.from?.first_name ?? "kamu";
   await ctx.reply(
     `Halo, ${name}! Aku Kera, asisten pribadimu.\n` +
-      "Tanya apa saja lewat pesan teks. Aku belum ingat percakapan sebelumnya, jadi tiap pesan berdiri sendiri.\n" +
-      "Kirim /ping untuk cek apakah aku hidup.",
+      "Tanya apa saja lewat pesan teks. Aku ingat obrolan terakhir kita di chat ini, " +
+      "tapi lupa lagi kalau aku di-restart.\n" +
+      "Kirim /reset untuk mulai obrolan dari awal, /ping untuk cek apakah aku hidup.",
   );
 }
 
@@ -20,6 +21,15 @@ export async function handleStart(ctx: CommandContext<Context>): Promise<void> {
 // "bot mati" dari "bot hidup tapi Ollama bermasalah".
 export async function handlePing(ctx: CommandContext<Context>): Promise<void> {
   await ctx.reply("pong");
+}
+
+// Buat handler /reset: hapus riwayat percakapan chat ini.
+// Dipasang di createBot() lewat command("reset", ...). Tidak memanggil model.
+export function createResetHandler(assistant: Assistant) {
+  return async (ctx: CommandContext<Context>): Promise<void> => {
+    await assistant.resetConversation(ctx.chat.id);
+    await ctx.reply("Oke, obrolan kita mulai dari awal. Yang tadi sudah aku lupakan.");
+  };
 }
 
 // Buat handler pesan teks yang meneruskan pesan ke assistant.
@@ -33,10 +43,10 @@ export function createTextHandler(assistant: Assistant, logger: Logger) {
     const updateId = ctx.update.update_id;
     const startedAt = Date.now();
 
-    let reply: string;
+    let reply: AssistantReply;
     try {
       reply = await withTypingIndicator(ctx, () =>
-        assistant.reply(ctx.message.text),
+        assistant.reply(ctx.chat.id, ctx.message.text),
       );
     } catch (error) {
       logger.error(
@@ -46,13 +56,16 @@ export function createTextHandler(assistant: Assistant, logger: Logger) {
       return;
     }
 
-    const chunks = splitMessage(reply);
+    const chunks = splitMessage(reply.text);
     for (const chunk of chunks) {
       await ctx.reply(chunk);
     }
-    // Hanya metadata yang di-log, bukan isi pesan atau jawaban.
+    // Hanya metadata yang di-log, bukan isi pesan atau jawaban. Jumlah token prompt
+    // dipakai untuk melihat seberapa dekat percakapan dengan batas context window.
     logger.info(
-      `Replied to update ${updateId} in ${Date.now() - startedAt} ms (${chunks.length} message(s))`,
+      `Replied to update ${updateId} in ${Date.now() - startedAt} ms ` +
+        `(${chunks.length} message(s), prompt ${reply.promptTokens ?? "?"} tokens, ` +
+        `history ${reply.historyTurns} turn(s))`,
     );
   };
 }
