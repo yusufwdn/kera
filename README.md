@@ -9,18 +9,26 @@ pembelajaran sendiri di `docs/learning/milestones/`.
 
 ## Status saat ini
 
-Milestone 2 (jawaban dari model lokal) selesai.
+Milestone 3 (konteks percakapan) selesai.
 
 | Kemampuan                                                 | Status                       |
 | --------------------------------------------------------- | ---------------------------- |
 | Toolchain Node + TypeScript                               | Selesai                      |
-| Bot Telegram: `/start`, `/ping`, allowlist user           | Selesai (Milestone 1-2)      |
+| Bot Telegram: `/start`, `/ping`, `/reset`, allowlist user | Selesai (Milestone 1-3)      |
 | Jawaban dari model lokal `qwen3:4b-instruct` lewat Ollama | Selesai (Milestone 2)        |
-| Konteks percakapan                                        | Direncanakan (Milestone 3)   |
+| Riwayat percakapan terbatas per chat                      | Selesai (Milestone 3)        |
 | Database, notes, reminder, tool calling                   | Direncanakan (Milestone 4-8) |
 
-Keterbatasan saat ini: Kera belum ingat pesan sebelumnya (setiap pesan berdiri sendiri),
-hanya mengerti pesan teks, dan hanya aktif selama laptop dan Ollama menyala.
+Keterbatasan saat ini: riwayat percakapan hanya di memori dan hilang saat Kera restart,
+hanya pesan teks yang dimengerti, dan Kera hanya aktif selama laptop dan Ollama menyala.
+
+## Perintah bot
+
+| Perintah | Fungsi                                 |
+| -------- | -------------------------------------- |
+| `/start` | Sapaan dan petunjuk singkat            |
+| `/ping`  | Cek bot hidup, tanpa memanggil model   |
+| `/reset` | Hapus riwayat percakapan di chat ini   |
 
 ## Arsitektur singkat
 
@@ -67,6 +75,7 @@ Lalu isi nilainya di `.env`. File `.env` di-ignore oleh Git dan tidak boleh di-c
 | `OLLAMA_MODEL`       | Tidak | Default `qwen3:4b-instruct`.                                                           |
 | `OLLAMA_THINK`       | Tidak | `true`/`false`, default `false`. `true` hanya untuk model thinking seperti `qwen3:4b`. |
 | `OLLAMA_TIMEOUT_MS`  | Tidak | Batas waktu satu jawaban, default `120000`.                                            |
+| `OLLAMA_NUM_CTX`     | Tidak | Context window dalam token, default `8192`, minimal `4096`. Lihat ADR-0004.            |
 
 Variabel yang dibiarkan kosong (`OLLAMA_MODEL=`) memakai nilai default.
 
@@ -107,10 +116,13 @@ Karena itu `npm run typecheck` wajib dijalankan sebelum commit. Penjelasan lengk
 | `Ollama check failed ... (unreachable)`                            | Ollama belum jalan. Cek `curl http://127.0.0.1:11434/api/version`.                                                   |
 | `Ollama check failed ... (model_not_found)`                        | Jalankan `ollama pull` untuk model di `OLLAMA_MODEL`.                                                                |
 | Bot membalas "nggak bisa menghubungi Ollama"                       | Ollama mati. `/ping` tetap bisa dipakai untuk memastikan bot sendiri hidup.                                          |
+| Kera lupa obrolan setelah restart                                  | Normal: riwayat hanya di memori sampai Milestone 4.                                                                  |
+| Kera terus membahas topik lama                                     | Kirim `/reset`.                                                                                                      |
 
 Troubleshooting lebih lengkap ada di
-[Milestone 1](docs/learning/milestones/milestone-01.md#19-troubleshooting) (Telegram) dan
-[Milestone 2](docs/learning/milestones/milestone-02.md#19-troubleshooting) (Ollama).
+[Milestone 1](docs/learning/milestones/milestone-01.md#19-troubleshooting) (Telegram),
+[Milestone 2](docs/learning/milestones/milestone-02.md#19-troubleshooting) (Ollama), dan
+[Milestone 3](docs/learning/milestones/milestone-03.md#19-troubleshooting) (riwayat).
 
 ## Dokumentasi
 
@@ -121,5 +133,6 @@ Troubleshooting lebih lengkap ada di
 - [Milestone 0](docs/learning/milestones/milestone-00.md)
 - [Milestone 1](docs/learning/milestones/milestone-01.md)
 - [Milestone 2](docs/learning/milestones/milestone-02.md)
+- [Milestone 3](docs/learning/milestones/milestone-03.md)
 - [Keputusan arsitektur (ADR)](docs/decisions/)
 - [Cara berkontribusi](CONTRIBUTING.md)

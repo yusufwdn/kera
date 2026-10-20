@@ -18,13 +18,18 @@ flowchart LR
     HND[bot/handlers.ts<br/>command dan pesan]
     AST[ai/assistant.ts<br/>persona dan pembersihan]
     OC[ai/ollamaClient.ts<br/>HTTP ke Ollama]
+    CW[conversation/contextWindow.ts<br/>susun prompt sesuai budget]
+    CS[conversation/conversationStore.ts<br/>riwayat per chat]
     IDX --> CFG
     IDX --> OC
+    IDX --> CS
     IDX --> AST
     IDX --> BOT
     BOT --> AUTH
     BOT --> HND
     HND --> AST
+    AST --> CW
+    AST --> CS
     AST --> OC
   end
 
@@ -33,15 +38,17 @@ flowchart LR
 
 | Modul | Tanggung jawab | Tidak boleh |
 | --- | --- | --- |
-| `src/index.ts` | Membaca config, merakit client -> assistant -> bot, cek Ollama, long polling, shutdown | Berisi logika balasan |
+| `src/index.ts` | Membaca config, merakit client + store -> assistant -> bot, cek Ollama, long polling, shutdown | Berisi logika balasan |
 | `src/config/env.ts` | Satu-satunya tempat yang membaca `process.env`; menghasilkan `Config` bertipe | Mengetahui Telegram atau Ollama |
 | `src/bot/createBot.ts` | Urutan middleware, error boundary | Memanggil `bot.start()` |
 | `src/bot/auth.ts` | Memutuskan siapa boleh memakai bot | Membalas pesan |
 | `src/bot/handlers.ts` | Menerjemahkan update Telegram ke panggilan assistant dan kembali; pesan error untuk user | Membuat request HTTP ke Ollama |
 | `src/bot/replyChunks.ts` | Memecah teks panjang sesuai batas Telegram | |
 | `src/bot/typing.ts` | Status "typing..." selama menunggu | |
-| `src/ai/assistant.ts` | Persona Kera (system prompt), menyusun messages, membersihkan output model | Mengetahui Telegram |
-| `src/ai/ollamaClient.ts` | HTTP ke Ollama: request, timeout, validasi respon, klasifikasi error | Mengetahui persona atau Telegram |
+| `src/ai/assistant.ts` | Persona Kera (system prompt), alur satu jawaban (riwayat -> prompt -> model -> simpan), membersihkan output model | Mengetahui Telegram |
+| `src/ai/ollamaClient.ts` | HTTP ke Ollama: request, timeout, `num_ctx`, validasi respon, klasifikasi error | Mengetahui persona, riwayat, atau Telegram |
+| `src/conversation/contextWindow.ts` | Perkiraan token dan memilih giliran riwayat yang muat di budget (fungsi murni) | Menyimpan state atau memanggil jaringan |
+| `src/conversation/conversationStore.ts` | Menyimpan giliran per `chat.id`, batas 20 giliran | Mengetahui token atau model |
 | `src/errors.ts` | `describeError`: ringkasan error yang aman untuk log | |
 
 ## Kenapa dipisah seperti ini
@@ -51,11 +58,13 @@ flowchart LR
   webhook bisa ditambahkan nanti tanpa mengubah handler (ADR-0001).
 - Auth sebagai middleware pertama: tidak ada handler yang "lupa" dicek.
 - Bot tidak tahu Ollama, Ollama client tidak tahu Telegram. Handler hanya memanggil
-  `assistant.reply(text)`. Kalau suatu saat model diganti ke API lain, yang berubah hanya
-  `src/ai/`.
+  `assistant.reply(chatId, text)`. Kalau suatu saat model diganti ke API lain, yang
+  berubah hanya `src/ai/`.
 - `assistant` dipisah dari `ollamaClient`: client mengurus "bagaimana berbicara HTTP
-  dengan Ollama", assistant mengurus "apa yang dikatakan Kera". Riwayat percakapan
-  (Milestone 3) akan masuk ke assistant, bukan ke client.
+  dengan Ollama", assistant mengurus "apa yang dikatakan Kera" dan kapan riwayat disimpan.
+- `src/conversation/` dipisah dari `src/ai/`: aturan memotong riwayat (`contextWindow.ts`)
+  adalah fungsi murni yang bisa diuji dengan data saja, dan cara menyimpan riwayat
+  (`ConversationStore`) bisa diganti SQLite di Milestone 4 tanpa mengubah assistant.
 - Dependency dioper sebagai parameter (`BotDependencies`, `fetch` di `OllamaClientOptions`),
   bukan diimpor global. Ini dependency injection versi paling sederhana: test bisa
   memberi versi palsu tanpa library mocking.
@@ -66,6 +75,7 @@ flowchart LR
 .env -> (node --env-file-if-exists) -> process.env -> loadConfig() -> Config
   Config.telegramBotToken, allowedUserIds -> createBot()
   Config.ollama                          -> createOllamaClient()
+  Config.ollama.numCtx - MAX_REPLY_TOKENS -> promptTokenBudget -> createAssistant()
 ```
 
 ## Alur error
@@ -85,8 +95,10 @@ sehingga token dan isi pesan user tidak ikut tercetak.
 ## Yang sengaja dibuat sederhana
 
 - Logging memakai `console`.
+- Riwayat percakapan di memori proses (`Map`), hilang saat restart (sampai Milestone 4).
 - Update diproses berurutan (bawaan `bot.start()`). GPU juga hanya bisa mengerjakan satu
   jawaban pada satu waktu, jadi paralelisme tidak mempercepat apa pun untuk satu pengguna.
+  Urutan ini juga menjamin dua jawaban tidak menulis riwayat chat yang sama bersamaan.
 - Tidak ada retry ke Ollama. Gagal sekali langsung dilaporkan ke user.
 - Belum ada folder `services/` dan `db/`.
 
